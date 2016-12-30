@@ -1,30 +1,16 @@
-/* Copyright (c) 2012 Nordic Semiconductor. All Rights Reserved.
- *
- * The information contained herein is property of Nordic Semiconductor ASA.
- * Terms and conditions of usage are described in detail in NORDIC
- * SEMICONDUCTOR STANDARD SOFTWARE LICENSE AGREEMENT.
- *
- * Licensees are granted free, non-transferable use of the information. NO
- * WARRANTY of ANY KIND is provided. This heading must NOT be removed from
- * the file.
- */
-
 /** @file
  *
- * @defgroup ble_sdk_apple_notification_main main.c
+ * @defgroup main.c
  * @{
- * @ingroup ble_sdk_app_apple_notification
- * @brief Apple Notification Client Sample Application main file. Disclaimer: 
- * This client implementation of the Apple Notification Center Service can and 
- * will be changed at any time by Nordic Semiconductor ASA.
- *
- * Server implementations such as the ones found in iOS can be changed at any 
- * time by Apple and may cause this client implementation to stop working.
- *
- * This file contains the source code for a sample application using the Apple 
- * Notification Center Service Client.
+ * @ingroup temperature_sensing
+ * @brief This file contains the application code for temperature sensing.
+ * The application measures the ambient temperature by talking to the SI7053
+ * chip over I2C. The measured temperature is then transmitted over BLE.
  */
 
+/******************************************************************************
+ * Included headers
+******************************************************************************/
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -53,6 +39,16 @@
 #include "app_twi.h"
 #include "app_util_platform.h"
 
+
+/******************************************************************************
+ * Compile time options
+******************************************************************************/
+#define ENABLE_DC_DC					1
+
+
+/******************************************************************************
+ * Macros
+******************************************************************************/
 #define COMPANY_ID						(0x0102u)
 #define I2C_ADDRESS						(0x40u)
 #define I2C_WRITE						0
@@ -69,8 +65,8 @@
 #define DISPLAY_MESSAGE_BUTTON_ID       1                                           /**< Button used to request notification attributes. */
 
 #define DEVICE_NAME                     "Temp Sensor"                               /**< Name of the device. Will be included in the advertising data. */
-#define APP_ADV_FAST_INTERVAL           1600                                        /**< Fast advertising interval (in units of 0.625 ms). The default value corresponds to 1 second. */
-#define APP_ADV_SLOW_INTERVAL           1600                                        /**< Slow advertising interval (in units of 0.625 ms). The default value corresponds to 1 second. */
+#define APP_ADV_FAST_INTERVAL           800                                         /**< Fast advertising interval (in units of 0.625 ms). The default value corresponds to 0.5 second. */
+#define APP_ADV_SLOW_INTERVAL           800                                         /**< Slow advertising interval (in units of 0.625 ms). The default value corresponds to 0.5 second. */
 #define APP_ADV_FAST_TIMEOUT            0                                           /**< The advertising time-out in units of seconds. */
 #define APP_ADV_SLOW_TIMEOUT            0                                           /**< The advertising time-out in units of seconds. */
 
@@ -110,9 +106,10 @@
 #define MAX_PENDING_TRANSACTIONS    5
 
 
+/******************************************************************************
+ * Globals
+******************************************************************************/
 static app_twi_t m_app_twi = APP_TWI_INSTANCE(0);
-
-
 static ble_db_discovery_t        m_ble_db_discovery;                       /**< Structure used to identify the DB Discovery module. */
 ble_advdata_manuf_data_t 		 manuf_data;
 uint8_t							 manufacturing_data[6];
@@ -120,6 +117,11 @@ static dm_application_instance_t m_app_handle;                             /**< 
 static ble_gap_sec_params_t      m_sec_param;                              /**< Security parameter for use in security requests. */
 
 uint8_t i2c_buffer[5];
+
+
+/******************************************************************************
+ * Functions
+******************************************************************************/
 
 /**@brief Callback function for handling asserts in the SoftDevice.
  *
@@ -226,6 +228,7 @@ static void device_manager_init(bool erase_bonds)
     err_code = dm_register(&m_app_handle, &register_param);
     APP_ERROR_CHECK(err_code);
 
+#ifdef ENABLE_DC_DC
     /* Enable DC-DC converter: Useful for lowering power consumption.
      * The links to understand its working are:
      * https://devzone.nordicsemi.com/question/685/ldo-vs-dcdc-nrf51822/
@@ -235,6 +238,7 @@ static void device_manager_init(bool erase_bonds)
      */
     err_code = sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);
     APP_ERROR_CHECK(err_code);
+#endif	/* #ifdef ENABLE_DC_DC */
 }
 
 
@@ -389,12 +393,14 @@ static void advertising_init(void)
     manufacturing_data[2] = device_addr.addr[2];
     manufacturing_data[3] = device_addr.addr[3];
 
+    /* Temperature value is 0 initially, to be updated at runtime */
     manufacturing_data[4] = 0x00;
     manufacturing_data[5] = 0x00;
 
     /* Build and set advertising data */
     memset(&advdata, 0, sizeof(advdata));
 
+    /* Configure ADV data parameters */
     advdata.name_type                = BLE_ADVDATA_FULL_NAME;
     advdata.flags                    = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
     manuf_data.company_identifier = COMPANY_ID;
@@ -402,6 +408,7 @@ static void advertising_init(void)
     manuf_data.data.size = sizeof(manufacturing_data);
     advdata.p_manuf_specific_data = &manuf_data;
 
+    /* Configure ADV settings */
     ble_adv_modes_config_t options = {0};
     options.ble_adv_whitelist_enabled = BLE_ADV_WHITELIST_DISABLED;
     options.ble_adv_fast_enabled      = BLE_ADV_FAST_ENABLED;
@@ -411,6 +418,7 @@ static void advertising_init(void)
     options.ble_adv_slow_interval     = APP_ADV_SLOW_INTERVAL;
     options.ble_adv_slow_timeout      = APP_ADV_SLOW_TIMEOUT;
 
+    /* Initialize SoftDevice with advertisement parameters just set */
     err_code = ble_advertising_init(&advdata, NULL, &options, on_adv_evt, NULL);
 	m_advdata.p_manuf_specific_data = &manuf_data;
     APP_ERROR_CHECK(err_code);
@@ -455,6 +463,7 @@ static void twi_config(void)
 {
     uint32_t err_code;
 
+    /* COnfigure TWI */
     nrf_drv_twi_config_t const config = {
        .scl                = OUR_SCL_PIN,
        .sda                = OUR_SDA_PIN,
@@ -462,6 +471,7 @@ static void twi_config(void)
        .interrupt_priority = APP_IRQ_PRIORITY_LOW
     };
 
+    /* Start TWI */
     APP_TWI_INIT(&m_app_twi, &config, MAX_PENDING_TRANSACTIONS, err_code);
     APP_ERROR_CHECK(err_code);
 }
@@ -561,6 +571,6 @@ int main(void)
 
         read_i2c_and_update_ble();
     }
-
 }
 
+/* End of file */
